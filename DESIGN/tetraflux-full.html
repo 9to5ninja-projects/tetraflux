@@ -516,6 +516,8 @@
             const cellSize = 36;
             const height = cellSize * Math.sqrt(3) / 2;
             
+            // 1. Generate full hexagon
+            let tempCells = [];
             for (let row = 0; row < GRID_SIZE * 2 - 1; row++) {
                 const rowWidth = row < GRID_SIZE ? GRID_SIZE + row : GRID_SIZE * 3 - 2 - row;
                 const offset = Math.abs(GRID_SIZE - 1 - row);
@@ -525,11 +527,7 @@
                     const x = offset * (cellSize / 2) + col * (cellSize / 2);
                     const y = row * height;
                     
-                    // Calculate edge cells (can be exiled from)
-                    const isEdge = row === 0 || row === GRID_SIZE * 2 - 2 || 
-                                   col === 0 || col === rowWidth * 2 - 1;
-                    
-                    cells.push({
+                    tempCells.push({
                         id: id++,
                         row,
                         col,
@@ -537,12 +535,36 @@
                         isUpward,
                         x,
                         y,
-                        isEdge,
                         cellSize,
                         height
                     });
                 }
             }
+            
+            // 2. Remove "teeth" (cells with < 2 neighbors)
+            // This prevents the "2 vacant off-board spaces" vulnerability
+            const getNeighborCount = (cell, allCells) => {
+                let count = 0;
+                allCells.forEach(c => {
+                    if (c.id === cell.id) return;
+                    const dx = Math.abs(c.x - cell.x);
+                    const dy = Math.abs(c.y - cell.y);
+                    // Check for shared edge
+                    if (dx <= cellSize * 0.6 && dy <= height * 1.1 && (dx + dy) < cellSize * 1.2) {
+                        count++;
+                    }
+                });
+                return count;
+            };
+            
+            // Filter out cells with fewer than 2 neighbors (corners/teeth)
+            cells = tempCells.filter(cell => getNeighborCount(cell, tempCells) >= 2);
+            
+            // 3. Calculate isEdge for remaining cells
+            cells.forEach(cell => {
+                const neighbors = getNeighborCount(cell, cells);
+                cell.isEdge = neighbors < 3; // Triangle has 3 sides, so < 3 neighbors means it's on edge
+            });
         }
         
         // ============================================
@@ -1240,6 +1262,59 @@
             return new Promise(resolve => setTimeout(resolve, ms));
         }
         
+        function determineFirstPlayer() {
+            const container = document.getElementById('modal-container');
+            
+            // Roll until we get Red (0) or Blue (1)
+            // In a real physical game, you'd roll the tetrahedron. 
+            // If it lands on Neutral, you roll again.
+            let winner = -1;
+            while (winner === -1) {
+                const roll = Math.floor(Math.random() * 4);
+                if (roll === 0) winner = 0;
+                if (roll === 1) winner = 1;
+            }
+            
+            currentPlayer = winner;
+            
+            // Show Modal
+            container.innerHTML = `
+                <div class="modal-overlay">
+                    <div class="modal" style="text-align:center; min-width: 300px;">
+                        <div class="modal-title">🎲 First Player Roll</div>
+                        <div style="margin: 30px; display: flex; justify-content: center;">
+                            <div style="
+                                width: 80px; 
+                                height: 80px; 
+                                background: ${COLORS[winner]}; 
+                                border-radius: 50%; 
+                                box-shadow: 0 0 30px ${COLORS[winner]};
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                font-size: 2rem;
+                            ">
+                                ${winner === 1 && gameMode === 'ai' ? '🤖' : '👤'}
+                            </div>
+                        </div>
+                        <div style="font-size: 1.2rem; margin-bottom: 20px; color: #e2e8f0;">
+                            <span style="color:${COLORS[winner]}; font-weight: bold;">${COLOR_NAMES[winner]}</span> goes first!
+                        </div>
+                        <button class="btn" onclick="closeFirstPlayerModal()" style="background: #334155; color: white;">Start Game</button>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function closeFirstPlayerModal() {
+            document.getElementById('modal-container').innerHTML = '';
+            renderAll();
+            // If AI starts, trigger AI
+            if (gameMode === 'ai' && currentPlayer === 1) {
+                setTimeout(() => executeAITurn(), 500);
+            }
+        }
+
         function resetGame() {
             pieces = {};
             currentPlayer = 0;
@@ -1253,7 +1328,7 @@
             document.getElementById('modal-container').innerHTML = '';
             document.getElementById('game-over-container').innerHTML = '';
             
-            renderAll();
+            determineFirstPlayer();
         }
         
         // ============================================
@@ -1261,7 +1336,7 @@
         // ============================================
         
         generateGrid();
-        renderAll();
+        determineFirstPlayer();
         
         console.log('TETRAFLUX v0.2 loaded');
         console.log(`Grid: ${cells.length} cells`);
