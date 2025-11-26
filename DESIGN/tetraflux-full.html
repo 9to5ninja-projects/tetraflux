@@ -357,19 +357,27 @@
             </div>
             
             <div class="side-panel">
-                <!-- Game Mode -->
+                <!-- Game Setup -->
                 <div class="panel">
-                    <div class="panel-title">Game Mode</div>
-                    <div class="mode-selector">
-                        <button class="mode-btn active" id="mode-pvp" onclick="setGameMode('pvp')">
-                            👤 vs 👤
-                        </button>
-                        <button class="mode-btn" id="mode-ai" onclick="setGameMode('ai')">
-                            👤 vs 🤖
+                    <div class="panel-title">Game Setup</div>
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-size: 0.8rem; color: #94a3b8;">Players:</span>
+                            <select id="player-count" onchange="updatePlayerConfig()" style="background: #0f172a; color: #e2e8f0; border: 1px solid #334155; padding: 4px; border-radius: 4px;">
+                                <option value="2">2 Players</option>
+                                <option value="3">3 Players</option>
+                                <option value="4">4 Players</option>
+                            </select>
+                        </div>
+                        <div id="player-config-list" style="display: flex; flex-direction: column; gap: 4px;">
+                            <!-- Populated by JS -->
+                        </div>
+                        <button class="btn" onclick="applySetupAndReset()" style="background: #3b82f6; color: white; padding: 8px; font-size: 0.8rem; margin-top: 4px;">
+                            Apply & Restart
                         </button>
                     </div>
                 </div>
-                
+
                 <!-- Current Player -->
                 <div class="panel">
                     <div class="panel-title">Current Turn</div>
@@ -379,6 +387,9 @@
                             <div class="player-name" id="current-name">Red</div>
                             <div class="player-type" id="current-type">Human</div>
                         </div>
+                    </div>
+                    <div style="font-size: 0.75rem; color: #64748b; margin-top: 8px;">
+                        Shortcuts: <span style="color: #e2e8f0; font-weight: bold;">R</span> = Rotate, <span style="color: #e2e8f0; font-weight: bold;">F</span> = Flip
                     </div>
                     <button class="btn ai-btn" id="ai-move-btn" onclick="executeAITurn()" style="margin-top: 12px; display: none;">
                         🤖 Execute AI Move
@@ -505,6 +516,15 @@
         let gameOver = false;
         let stats = { exiled: 0, destroyed: 0 };
         let pendingFleeChoice = null;
+        
+        // New State for v0.2.1
+        let ghostPiece = null; // { cellId, hiddenFace, rotation }
+        let players = [
+            { id: 0, type: 'human', active: true },
+            { id: 1, type: 'human', active: true },
+            { id: 2, type: 'human', active: false },
+            { id: 3, type: 'human', active: false }
+        ];
         
         // ============================================
         // GRID GENERATION
@@ -756,15 +776,15 @@
                 // Owner chooses - for AI or if it's opponent's piece during their turn
                 const defenderOwner = defender.owner;
                 
-                if (gameMode === 'ai' && defenderOwner === 1) {
+                if (players[defenderOwner].type === 'ai') {
                     // AI chooses flee direction
                     chosenFlee = aiChooseFleeDirection(fleeOptions, defenderId);
                     addLog(`🤖 AI chose flee direction`, 'ai');
-                } else if (defenderOwner === currentPlayer || gameMode === 'pvp') {
+                } else if (players[defenderOwner].type === 'human') {
                     // Human chooses
                     chosenFlee = await humanChooseFleeDirection(fleeOptions, defenderId);
                 } else {
-                    // Non-current player's piece - auto choose best
+                    // Should not happen if all players are configured, but fallback
                     chosenFlee = fleeOptions.find(f => !f.isExile) || fleeOptions[0];
                 }
             }
@@ -860,10 +880,10 @@
         
         function evaluatePlacement(cellId, hiddenFace, rotation) {
             let score = 0;
-            const piece = { hiddenFace, rotation, owner: 1 };
+            const piece = { hiddenFace, rotation, owner: currentPlayer };
             
-            // Priority 1: Bury AI color (Blue = 1)
-            if (hiddenFace === 1) score += 100;
+            // Priority 1: Bury AI color
+            if (hiddenFace === currentPlayer) score += 100;
             
             // Priority 4: Claim interior
             const cell = cells.find(c => c.id === cellId);
@@ -880,7 +900,7 @@
                     if (collision !== null) {
                         collisionRisk++;
                         // Priority 3: Threaten opponent's buried colors
-                        if (pieces[adjCell.id].owner === 0) {
+                        if (pieces[adjCell.id].owner !== currentPlayer) {
                             score += 10;
                         }
                     }
@@ -890,9 +910,12 @@
             // Penalize high collision risk (unpredictable cascades)
             score -= collisionRisk * 15;
             
-            // Priority 5: Use neutrals strategically
-            if (hiddenFace === 2 || hiddenFace === 3) {
-                score -= 30; // Prefer hiding own color
+            // Priority 5: Use neutrals strategically (if any)
+            // In 4 player game, there are no neutrals, but in 2 player there are.
+            // If hiddenFace is not current player and not an active opponent...
+            // But for now, just prefer hiding own color.
+            if (hiddenFace !== currentPlayer) {
+                score -= 30; 
             }
             
             return score;
@@ -921,7 +944,7 @@
         }
         
         async function executeAITurn() {
-            if (gameOver || currentPlayer !== 1 || gameMode !== 'ai') return;
+            if (gameOver || players[currentPlayer].type !== 'ai') return;
             
             document.getElementById('ai-move-btn').disabled = true;
             
@@ -974,11 +997,17 @@
             hideOrientationPicker();
             
             if (!checkGameOver()) {
-                currentPlayer = (currentPlayer + 1) % 2;
+                // Find next active player
+                let nextPlayer = (currentPlayer + 1) % 4;
+                while (!players[nextPlayer].active) {
+                    nextPlayer = (nextPlayer + 1) % 4;
+                }
+                currentPlayer = nextPlayer;
+                
                 renderAll();
                 
                 // Auto-trigger AI if it's AI's turn
-                if (gameMode === 'ai' && currentPlayer === 1) {
+                if (players[currentPlayer].type === 'ai') {
                     setTimeout(() => executeAITurn(), 500);
                 }
             }
@@ -996,39 +1025,53 @@
         
         function showGameOver() {
             const scores = calculateScores();
-            const p1Score = scores[0];
-            const p2Score = scores[1];
             
-            let winner, winnerColor;
-            if (p1Score > p2Score) {
-                winner = 'Red';
-                winnerColor = COLORS[0];
-            } else if (p2Score > p1Score) {
-                winner = 'Blue';
-                winnerColor = COLORS[1];
-            } else {
-                winner = 'TIE';
+            let winner = null;
+            let maxScore = -1;
+            let isTie = false;
+            
+            players.forEach(p => {
+                if (!p.active) return;
+                if (scores[p.id] > maxScore) {
+                    maxScore = scores[p.id];
+                    winner = p;
+                    isTie = false;
+                } else if (scores[p.id] === maxScore) {
+                    isTie = true;
+                }
+            });
+            
+            let winnerText, winnerColor;
+            if (isTie) {
+                winnerText = "It's a Tie!";
                 winnerColor = '#94a3b8';
+            } else {
+                winnerText = `${COLOR_NAMES[winner.id]} Wins!`;
+                winnerColor = COLORS[winner.id];
             }
             
             const container = document.getElementById('game-over-container');
+            
+            let scoresHtml = '<div style="display: flex; justify-content: center; gap: 20px; flex-wrap: wrap;">';
+            players.forEach(p => {
+                if (!p.active) return;
+                scoresHtml += `
+                    <div style="text-align: center;">
+                        <div style="color: ${COLORS[p.id]}; font-size: 2rem; font-weight: bold;">${scores[p.id]}</div>
+                        <div style="color: #94a3b8;">${COLOR_NAMES[p.id]}</div>
+                    </div>
+                `;
+            });
+            scoresHtml += '</div>';
+
             container.innerHTML = `
                 <div class="game-over">
                     <h2>🏆 Game Over!</h2>
                     <div class="winner-display" style="color: ${winnerColor}">
-                        ${winner === 'TIE' ? "It's a Tie!" : `${winner} Wins!`}
+                        ${winnerText}
                     </div>
                     <div class="final-scores">
-                        <div style="display: flex; justify-content: center; gap: 40px;">
-                            <div>
-                                <div style="color: ${COLORS[0]}; font-size: 2rem; font-weight: bold;">${p1Score}</div>
-                                <div style="color: #94a3b8;">Red</div>
-                            </div>
-                            <div>
-                                <div style="color: ${COLORS[1]}; font-size: 2rem; font-weight: bold;">${p2Score}</div>
-                                <div style="color: #94a3b8;">Blue</div>
-                            </div>
-                        </div>
+                        ${scoresHtml}
                     </div>
                     <button class="btn reset-btn" onclick="resetGame()" style="margin-top: 20px;">
                         🔄 Play Again
@@ -1041,69 +1084,103 @@
         // UI HANDLERS
         // ============================================
         
+        // Keyboard Shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (gameOver || !ghostPiece) return;
+            
+            // Only allow manipulation if it's human turn
+            if (players[currentPlayer].type !== 'human') return;
+
+            switch(e.key.toLowerCase()) {
+                case 'r':
+                    ghostPiece.rotation = (ghostPiece.rotation + 1) % 3;
+                    renderBoard();
+                    break;
+                case 'f':
+                    // Cycle through valid hidden faces
+                    // For simplicity, just cycle 0-3, but maybe we should skip inactive players?
+                    // Let's just cycle 0-3 for now, player can choose to hide neutral
+                    ghostPiece.hiddenFace = (ghostPiece.hiddenFace + 1) % 4;
+                    renderBoard();
+                    break;
+                case 'enter':
+                    if (ghostPiece) {
+                        placePiece(ghostPiece.cellId, ghostPiece.hiddenFace, ghostPiece.rotation);
+                    }
+                    break;
+                case 'escape':
+                    ghostPiece = null;
+                    renderBoard();
+                    break;
+            }
+        });
+
         function handleCellClick(cellId) {
             if (pieces[cellId] || gameOver) return;
-            if (gameMode === 'ai' && currentPlayer === 1) return; // AI's turn
+            if (players[currentPlayer].type === 'ai') return; // AI's turn
             
-            selectedCell = cellId;
-            showOrientationPicker();
+            // If clicking the same cell with ghost piece, confirm placement
+            if (ghostPiece && ghostPiece.cellId === cellId) {
+                placePiece(cellId, ghostPiece.hiddenFace, ghostPiece.rotation);
+                return;
+            }
+
+            // Otherwise, move ghost piece here
+            // Default: Hide current player's color, rotation 0
+            ghostPiece = {
+                cellId,
+                hiddenFace: currentPlayer,
+                rotation: 0
+            };
+            renderBoard();
         }
         
-        function showOrientationPicker() {
-            const container = document.getElementById('modal-container');
+        // Deprecated: showOrientationPicker, hideOrientationPicker, selectOrientation
+        // We now use ghost piece interaction
+        function hideOrientationPicker() {
+            ghostPiece = null;
+            renderBoard();
+        }
+
+        function updatePlayerConfig() {
+            const count = parseInt(document.getElementById('player-count').value);
+            const container = document.getElementById('player-config-list');
+            let html = '';
             
-            let html = `<div class="modal-overlay">
-                <div class="modal">
-                    <div class="modal-title">Choose Piece Orientation</div>
-                    <div class="modal-hint">Center dot = hidden face | Goal: hide ${COLOR_NAMES[currentPlayer]}</div>
-                    <div class="orientation-grid">`;
-            
-            for (let hidden = 0; hidden < 4; hidden++) {
-                html += `<div class="orientation-column">
-                    <div class="orientation-label">Hide ${COLOR_NAMES[hidden]}</div>`;
-                
-                for (let rot = 0; rot < 3; rot++) {
-                    const visible = getVisibleFaces(hidden, rot);
-                    const isRecommended = hidden === currentPlayer;
-                    
-                    html += `<button class="orientation-btn ${isRecommended ? 'recommended' : ''}" 
-                        onclick="selectOrientation(${hidden}, ${rot})">
-                        <svg width="36" height="36" viewBox="0 0 40 40">
-                            <circle cx="20" cy="20" r="6" fill="${COLORS[hidden]}" stroke="#000" stroke-width="1"/>`;
-                    
-                    visible.forEach((face, i) => {
-                        const angle = (i * 120 - 90) * Math.PI / 180;
-                        html += `<line x1="${20 + Math.cos(angle) * 8}" y1="${20 + Math.sin(angle) * 8}" 
-                            x2="${20 + Math.cos(angle) * 15}" y2="${20 + Math.sin(angle) * 15}" 
-                            stroke="${COLORS[face]}" stroke-width="3" stroke-linecap="round"/>`;
-                    });
-                    
-                    html += `</svg></button>`;
-                }
-                html += '</div>';
+            for (let i = 0; i < count; i++) {
+                const isAI = players[i].type === 'ai';
+                html += `
+                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <div style="width: 12px; height: 12px; background: ${COLORS[i]}; border-radius: 2px;"></div>
+                            <span>${COLOR_NAMES[i]}</span>
+                        </div>
+                        <select id="p${i}-type" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-radius: 4px; font-size: 0.75rem;">
+                            <option value="human" ${!isAI ? 'selected' : ''}>Human</option>
+                            <option value="ai" ${isAI ? 'selected' : ''}>AI</option>
+                        </select>
+                    </div>
+                `;
             }
-            
-            html += `</div>
-                <button class="cancel-btn" onclick="hideOrientationPicker()">Cancel</button>
-                </div></div>`;
-            
             container.innerHTML = html;
         }
-        
-        function hideOrientationPicker() {
-            document.getElementById('modal-container').innerHTML = '';
-            selectedCell = null;
-        }
-        
-        async function selectOrientation(hiddenFace, rotation) {
-            if (selectedCell === null) return;
-            await placePiece(selectedCell, hiddenFace, rotation);
-        }
-        
-        function setGameMode(mode) {
-            gameMode = mode;
-            document.getElementById('mode-pvp').classList.toggle('active', mode === 'pvp');
-            document.getElementById('mode-ai').classList.toggle('active', mode === 'ai');
+
+        function applySetupAndReset() {
+            const count = parseInt(document.getElementById('player-count').value);
+            
+            // Reset players
+            players.forEach(p => p.active = false);
+            
+            for (let i = 0; i < count; i++) {
+                const type = document.getElementById(`p${i}-type`).value;
+                players[i].active = true;
+                players[i].type = type;
+            }
+            
+            // Update game mode for legacy checks (though we should use players array now)
+            // If any player is AI, we can consider it 'ai' mode for some UI logic
+            gameMode = players.some(p => p.active && p.type === 'ai') ? 'ai' : 'pvp';
+            
             resetGame();
         }
         
@@ -1120,7 +1197,7 @@
                 const piece = pieces[cell.id];
                 const isOccupied = !!piece;
                 const isValidTarget = !isOccupied && !gameOver && 
-                    (gameMode === 'pvp' || currentPlayer === 0);
+                    (players[currentPlayer].type === 'human');
                 
                 const { x, y, isUpward, cellSize, height } = cell;
                 
@@ -1138,33 +1215,44 @@
                 html += `<polygon points="${points}" fill="${fillColor}" stroke="#334155" stroke-width="1"/>`;
                 
                 if (piece) {
-                    const cx = x + cellSize / 2;
-                    const cy = isUpward ? y + height * 0.6 : y + height * 0.4;
-                    const visible = getVisibleFaces(piece.hiddenFace, piece.rotation);
-                    
-                    // Glow effect
-                    html += `<circle cx="${cx}" cy="${cy}" r="14" fill="none" stroke="${COLORS[piece.hiddenFace]}" 
-                        stroke-width="1" opacity="0.3"/>`;
-                    
-                    // Center dot (hidden face)
-                    html += `<circle cx="${cx}" cy="${cy}" r="5" fill="${COLORS[piece.hiddenFace]}" 
-                        stroke="#000" stroke-width="1.5"/>`;
-                    
-                    // Visible face indicators
-                    visible.forEach((face, i) => {
-                        const angle = (i * 120 - 90) * Math.PI / 180;
-                        html += `<line x1="${cx + Math.cos(angle) * 7}" y1="${cy + Math.sin(angle) * 7}" 
-                            x2="${cx + Math.cos(angle) * 13}" y2="${cy + Math.sin(angle) * 13}" 
-                            stroke="${COLORS[face]}" stroke-width="3" stroke-linecap="round"/>`;
-                    });
-                    
-                    // Owner indicator (tiny corner mark)
-                    const ownerX = cx + (piece.owner === 0 ? -8 : 8);
-                    html += `<circle cx="${ownerX}" cy="${cy - 8}" r="2" fill="${COLORS[piece.owner]}" opacity="0.6"/>`;
+                    renderPiece(html, piece, x, y, isUpward, cellSize, height);
+                } else if (ghostPiece && ghostPiece.cellId === cell.id) {
+                    // Render Ghost Piece
+                    const ghost = { ...ghostPiece, owner: currentPlayer };
+                    html += `<g opacity="0.5" style="pointer-events: none;">`;
+                    renderPiece(html, ghost, x, y, isUpward, cellSize, height);
+                    html += `</g>`;
                 }
                 
                 html += '</g>';
             });
+            
+            // Helper to render piece content (extracted to avoid duplication)
+            function renderPiece(buffer, p, x, y, isUpward, cellSize, height) {
+                const cx = x + cellSize / 2;
+                const cy = isUpward ? y + height * 0.6 : y + height * 0.4;
+                const visible = getVisibleFaces(p.hiddenFace, p.rotation);
+                
+                // Glow effect
+                html += `<circle cx="${cx}" cy="${cy}" r="14" fill="none" stroke="${COLORS[p.hiddenFace]}" 
+                    stroke-width="1" opacity="0.3"/>`;
+                
+                // Center dot (hidden face)
+                html += `<circle cx="${cx}" cy="${cy}" r="5" fill="${COLORS[p.hiddenFace]}" 
+                    stroke="#000" stroke-width="1.5"/>`;
+                
+                // Visible face indicators
+                visible.forEach((face, i) => {
+                    const angle = (i * 120 - 90) * Math.PI / 180;
+                    html += `<line x1="${cx + Math.cos(angle) * 7}" y1="${cy + Math.sin(angle) * 7}" 
+                        x2="${cx + Math.cos(angle) * 13}" y2="${cy + Math.sin(angle) * 13}" 
+                        stroke="${COLORS[face]}" stroke-width="3" stroke-linecap="round"/>`;
+                });
+                
+                // Owner indicator (tiny corner mark)
+                const ownerX = cx + (p.owner === 0 ? -8 : 8);
+                html += `<circle cx="${ownerX}" cy="${cy - 8}" r="2" fill="${COLORS[p.owner]}" opacity="0.6"/>`;
+            }
             
             svg.innerHTML = html;
             
@@ -1185,29 +1273,34 @@
             const total = Object.values(pieces).length || 1;
             
             let html = '';
-            [0, 1].forEach(p => {
-                const pct = (scores[p] / total * 100).toFixed(0);
+            
+            // Active Players
+            players.forEach(p => {
+                if (!p.active) return;
+                const pct = (scores[p.id] / total * 100).toFixed(0);
                 html += `<div class="score-row">
                     <div class="score-label">
-                        <div class="score-dot" style="background:${COLORS[p]};box-shadow:0 0 10px ${COLORS[p]}"></div>
-                        <span>${COLOR_NAMES[p]}${gameMode === 'ai' && p === 1 ? ' 🤖' : ''}</span>
+                        <div class="score-dot" style="background:${COLORS[p.id]};box-shadow:0 0 10px ${COLORS[p.id]}"></div>
+                        <span>${COLOR_NAMES[p.id]}${p.type === 'ai' ? ' 🤖' : ''}</span>
                     </div>
-                    <span class="score-value">${scores[p]}</span>
+                    <span class="score-value">${scores[p.id]}</span>
                 </div>
                 <div class="score-bar">
-                    <div class="score-fill" style="width:${pct}%;background:${COLORS[p]}"></div>
+                    <div class="score-fill" style="width:${pct}%;background:${COLORS[p.id]}"></div>
                 </div>`;
             });
             
-            html += '<hr class="divider"><div class="neutral-label">Neutral Colors</div>';
+            html += '<hr class="divider"><div class="neutral-label">Neutral / Inactive</div>';
             
-            [2, 3].forEach(p => {
+            // Inactive/Neutral
+            players.forEach(p => {
+                if (p.active) return;
                 html += `<div class="score-row">
                     <div class="score-label">
-                        <div class="score-dot" style="background:${COLORS[p]};width:14px;height:14px;box-shadow:none"></div>
-                        <span style="color:#64748b;font-size:0.85rem">${COLOR_NAMES[p]}</span>
+                        <div class="score-dot" style="background:${COLORS[p.id]};width:14px;height:14px;box-shadow:none"></div>
+                        <span style="color:#64748b;font-size:0.85rem">${COLOR_NAMES[p.id]}</span>
                     </div>
-                    <span class="score-value" style="color:#64748b;font-size:1rem">${scores[p]}</span>
+                    <span class="score-value" style="color:#64748b;font-size:1rem">${scores[p.id]}</span>
                 </div>`;
             });
             
@@ -1219,7 +1312,7 @@
             document.getElementById('current-color').style.boxShadow = `0 0 20px ${COLORS[currentPlayer]}`;
             document.getElementById('current-name').textContent = COLOR_NAMES[currentPlayer];
             
-            const isAI = gameMode === 'ai' && currentPlayer === 1;
+            const isAI = players[currentPlayer].type === 'ai';
             document.getElementById('current-type').textContent = isAI ? '🤖 AI' : '👤 Human';
             
             const aiBtn = document.getElementById('ai-move-btn');
@@ -1265,14 +1358,10 @@
         function determineFirstPlayer() {
             const container = document.getElementById('modal-container');
             
-            // Roll until we get Red (0) or Blue (1)
-            // In a real physical game, you'd roll the tetrahedron. 
-            // If it lands on Neutral, you roll again.
+            // Roll until we get an active player
             let winner = -1;
-            while (winner === -1) {
-                const roll = Math.floor(Math.random() * 4);
-                if (roll === 0) winner = 0;
-                if (roll === 1) winner = 1;
+            while (winner === -1 || !players[winner].active) {
+                winner = Math.floor(Math.random() * 4);
             }
             
             currentPlayer = winner;
@@ -1294,7 +1383,7 @@
                                 justify-content: center;
                                 font-size: 2rem;
                             ">
-                                ${winner === 1 && gameMode === 'ai' ? '🤖' : '👤'}
+                                ${players[winner].type === 'ai' ? '🤖' : '👤'}
                             </div>
                         </div>
                         <div style="font-size: 1.2rem; margin-bottom: 20px; color: #e2e8f0;">
@@ -1310,7 +1399,7 @@
             document.getElementById('modal-container').innerHTML = '';
             renderAll();
             // If AI starts, trigger AI
-            if (gameMode === 'ai' && currentPlayer === 1) {
+            if (players[currentPlayer].type === 'ai') {
                 setTimeout(() => executeAITurn(), 500);
             }
         }
@@ -1336,9 +1425,10 @@
         // ============================================
         
         generateGrid();
+        updatePlayerConfig();
         determineFirstPlayer();
         
-        console.log('TETRAFLUX v0.2 loaded');
+        console.log('TETRAFLUX v0.2.1 loaded');
         console.log(`Grid: ${cells.length} cells`);
         console.log('Game modes: PvP, vs AI');
     </script>
