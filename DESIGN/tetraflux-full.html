@@ -631,18 +631,29 @@
                 
                 // Adjacent triangles share an edge
                 if (dx <= cellSize * 0.6 && dy <= height * 1.1 && (dx + dy) < cellSize * 1.2) {
-                    // Determine which edge connects them
-                    let edgeIndex = 0;
+                    let edgeIndex = -1;
+                    
                     if (cell.isUpward) {
-                        if (c.y < cell.y) edgeIndex = 2; // back/top
-                        else if (c.x < cell.x) edgeIndex = 0; // left
-                        else edgeIndex = 1; // right
+                        // Upward ^ : Can only have neighbors Left, Right, Bottom
+                        // Top neighbor is a VERTEX connection, not an edge.
+                        if (c.y > cell.y) edgeIndex = 2; // Bottom
+                        else if (Math.abs(c.y - cell.y) < 1) { // Same row
+                            if (c.x < cell.x) edgeIndex = 0; // Left
+                            else edgeIndex = 1; // Right
+                        }
                     } else {
-                        if (c.y > cell.y) edgeIndex = 2; // back/bottom
-                        else if (c.x < cell.x) edgeIndex = 0; // left
-                        else edgeIndex = 1; // right
+                        // Downward v : Can only have neighbors Left, Right, Top
+                        // Bottom neighbor is a VERTEX connection, not an edge.
+                        if (c.y < cell.y) edgeIndex = 2; // Top
+                        else if (Math.abs(c.y - cell.y) < 1) { // Same row
+                            if (c.x < cell.x) edgeIndex = 0; // Left
+                            else edgeIndex = 1; // Right
+                        }
                     }
-                    adjacent.push({ cell: c, edgeIndex });
+                    
+                    if (edgeIndex !== -1) {
+                        adjacent.push({ cell: c, edgeIndex });
+                    }
                 }
             });
             
@@ -670,12 +681,12 @@
                 // Determine which edges lead off-board
                 const { row, col, rowWidth, isUpward } = cell;
                 
-                // Top edge
-                if (row === 0 && isUpward) {
+                // Top edge (Only Downward triangles have a top edge)
+                if (row === 0 && !isUpward) {
                     directions.push({ targetCell: null, edgeIndex: 2, isExile: true });
                 }
-                // Bottom edge
-                if (row === GRID_SIZE * 2 - 2 && !isUpward) {
+                // Bottom edge (Only Upward triangles have a bottom edge)
+                if (row === GRID_SIZE * 2 - 2 && isUpward) {
                     directions.push({ targetCell: null, edgeIndex: 2, isExile: true });
                 }
                 // Left edge
