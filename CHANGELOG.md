@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.0] - 2025-11-26
+### Added
+- **Castle Mode Complete**:
+    - **First Piece Rule**: The first piece placed by each player is marked as their "Castle" (indicated by a 👑 crown).
+    - **Elimination**: If a player's Castle is destroyed or exiled, that player is immediately eliminated from the game.
+    - **Last Man Standing**: In Castle Mode, if only one player remains, they win automatically.
+- **Keyboard Controls**:
+    - **D-Pad Navigation**: Use Arrow Keys to move the selection cursor across the board.
+    - **Flee Selection**: Arrow keys can now be used to cycle through flee options.
+    - **Shortcuts**: `R` to Rotate, `F` to Flip, `ENTER` to Place.
+- **Interactive Flee Selection**: Players can now choose flee directions by clicking board cells or using keyboard (TAB/ENTER).
+- **Board Size Selector**: Added support for 4 board sizes: Small (6), Medium (24), Large (54), and X-Large (96).
+
+### Fixed
+- **Board Size Bug**: Fixed an issue where the board size would revert to default when resetting the game.
+- **Player Restoration**: Eliminated players are now correctly restored when starting a new game.
+
+### Changed
+- **Board Layout**: Completely overhauled grid generation to create a perfect "Flat Top" hexagon with 4 distinct zones (Center + 3 Rings).
+- **Flee Rules**: When a piece is forced to flee, the player to the **left of the attacker** now decides the direction (unless it's a Castle).
+- **Triangle Orientation**: Fixed row alignment so top half rows start/end with Upward triangles and bottom half with Downward triangles for perfect meshing.
+
 ## [v0.2.1] - 2025-11-26
 ### Added
 - First player determination mechanic ("Roll for initiative").

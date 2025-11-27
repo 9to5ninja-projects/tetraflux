@@ -241,6 +241,13 @@
         .cancel-btn:hover { background: #475569; }
         
         /* Flee choice modal */
+        .modal-overlay.interactive {
+            background: rgba(0,0,0,0.2);
+            pointer-events: none;
+        }
+        .modal-overlay.interactive .flee-modal {
+            pointer-events: auto;
+        }
         .flee-modal {
             background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
             border: 2px solid #f59e0b;
@@ -260,7 +267,7 @@
             font-size: 0.9rem;
             transition: all 0.2s;
         }
-        .flee-btn:hover {
+        .flee-btn:hover, .flee-btn.selected {
             border-color: #22d3ee;
             background: #164e63;
         }
@@ -268,7 +275,7 @@
             border-color: #a855f7;
             color: #c4b5fd;
         }
-        .flee-btn.exile:hover {
+        .flee-btn.exile:hover, .flee-btn.exile.selected {
             background: #3b0764;
         }
         
@@ -342,6 +349,19 @@
         .cell.valid-target { cursor: pointer; }
         .cell.valid-target:hover polygon { fill: #0e7490 !important; }
         .cell.occupied { cursor: default; }
+        
+        /* Flee Target Styles */
+        .cell.flee-target { cursor: pointer; }
+        .cell.flee-target polygon {
+            fill: #059669 !important;
+            stroke: #34d399 !important;
+            stroke-width: 2;
+        }
+        .cell.flee-target:hover polygon, .cell.flee-target.selected polygon {
+            fill: #10b981 !important;
+            stroke: #6ee7b7 !important;
+            stroke-width: 3;
+        }
     </style>
 </head>
 <body>
@@ -362,12 +382,25 @@
                     <div class="panel-title">Game Setup</div>
                     <div style="display: flex; flex-direction: column; gap: 8px;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-size: 0.8rem; color: #94a3b8;">Board Size:</span>
+                            <select id="board-size" onchange="updateBoardSize()" style="background: #0f172a; color: #e2e8f0; border: 1px solid #334155; padding: 4px; border-radius: 4px;">
+                                <option value="1">Small (6)</option>
+                                <option value="2">Medium (24)</option>
+                                <option value="3">Large (54)</option>
+                                <option value="4" selected>X-Large (96)</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="font-size: 0.8rem; color: #94a3b8;">Players:</span>
                             <select id="player-count" onchange="updatePlayerConfig()" style="background: #0f172a; color: #e2e8f0; border: 1px solid #334155; padding: 4px; border-radius: 4px;">
                                 <option value="2">2 Players</option>
                                 <option value="3">3 Players</option>
                                 <option value="4">4 Players</option>
                             </select>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                            <span style="font-size: 0.8rem; color: #94a3b8;">Castle Mode:</span>
+                            <input type="checkbox" id="castle-mode" onchange="updateCastleMode()" style="cursor: pointer;">
                         </div>
                         <div id="player-config-list" style="display: flex; flex-direction: column; gap: 4px;">
                             <!-- Populated by JS -->
@@ -462,11 +495,15 @@
                 </div>
                 <div class="rule-box">
                     <div class="rule-title">💥 Collision</div>
-                    <div class="rule-text">When visible faces of same color touch, the stationary piece is REPELLED — it flips one space away, changing its hidden face.</div>
+                    <div class="rule-text">When visible faces of same color touch, the stationary piece is REPELLED. The player to the LEFT of the attacker decides where it flees.</div>
                 </div>
                 <div class="rule-box">
                     <div class="rule-title">🌊 Cascade</div>
                     <div class="rule-text">Repelled pieces may cause new collisions, triggering chain reactions. All cascades resolve before turn ends.</div>
+                </div>
+                <div class="rule-box">
+                    <div class="rule-title">🏰 Castle Defense</div>
+                    <div class="rule-text">If a piece is designated as a Castle, the OWNER always decides where it flees, ignoring the "Left Player" rule.</div>
                 </div>
                 <div class="rule-box">
                     <div class="rule-title">🚪 Exile</div>
@@ -492,7 +529,7 @@
         // Constants
         const COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#eab308'];
         const COLOR_NAMES = ['Red', 'Blue', 'Green', 'Yellow'];
-        const GRID_SIZE = 5;
+        let BOARD_SIZE = 4; // 1=Small(6), 2=Medium(24), 3=Large(54), 4=X-Large(96)
         
         // Tetrahedron face relationships
         // When tumbling over an edge, the hidden face changes deterministically
@@ -516,6 +553,7 @@
         let gameOver = false;
         let stats = { exiled: 0, destroyed: 0 };
         let pendingFleeChoice = null;
+        let castleMode = false;
         
         // New State for v0.2.1
         let ghostPiece = null; // { cellId, hiddenFace, rotation }
@@ -535,23 +573,49 @@
             let id = 0;
             const cellSize = 36;
             const height = cellSize * Math.sqrt(3) / 2;
+            const totalRows = BOARD_SIZE * 2; 
             
-            // 1. Generate full hexagon
-            let tempCells = [];
-            for (let row = 0; row < GRID_SIZE * 2 - 1; row++) {
-                const rowWidth = row < GRID_SIZE ? GRID_SIZE + row : GRID_SIZE * 3 - 2 - row;
-                const offset = Math.abs(GRID_SIZE - 1 - row);
+            // Max width at middle (rows BOARD_SIZE-1 and BOARD_SIZE)
+            // N=1 -> 3, N=2 -> 7, N=3 -> 11, N=4 -> 15
+            const maxCols = 4 * BOARD_SIZE - 1;
+            
+            for (let row = 0; row < totalRows; row++) {
+                let distFromMiddle;
+                let isTopHalf = row < BOARD_SIZE;
                 
-                for (let col = 0; col < rowWidth * 2; col++) {
-                    const isUpward = col % 2 === 0;
-                    const x = offset * (cellSize / 2) + col * (cellSize / 2);
+                if (isTopHalf) {
+                    distFromMiddle = (BOARD_SIZE - 1) - row;
+                } else {
+                    distFromMiddle = row - BOARD_SIZE;
+                }
+                
+                // Count decreases by 2 for each step away from middle
+                const count = maxCols - (2 * distFromMiddle);
+                
+                // Calculate offset to center the row
+                const offsetUnits = distFromMiddle; 
+                
+                for (let col = 0; col < count; col++) {
+                    // Determine orientation
+                    let isUpward;
+                    if (isTopHalf) {
+                        // Top rows start with Upward (A)
+                        // Col 0=Up, 1=Down, 2=Up...
+                        isUpward = col % 2 === 0;
+                    } else {
+                        // Bottom rows start with Downward (V)
+                        // Col 0=Down, 1=Up, 2=Down...
+                        isUpward = col % 2 !== 0;
+                    }
+                    
+                    // Calculate coordinates
+                    const x = (offsetUnits + col) * (cellSize / 2);
                     const y = row * height;
                     
-                    tempCells.push({
+                    cells.push({
                         id: id++,
                         row,
-                        col,
-                        rowWidth,
+                        col, // relative col in row
                         isUpward,
                         x,
                         y,
@@ -561,15 +625,13 @@
                 }
             }
             
-            // 2. Remove "teeth" (cells with < 2 neighbors)
-            // This prevents the "2 vacant off-board spaces" vulnerability
+            // Calculate isEdge
             const getNeighborCount = (cell, allCells) => {
                 let count = 0;
                 allCells.forEach(c => {
                     if (c.id === cell.id) return;
                     const dx = Math.abs(c.x - cell.x);
                     const dy = Math.abs(c.y - cell.y);
-                    // Check for shared edge
                     if (dx <= cellSize * 0.6 && dy <= height * 1.1 && (dx + dy) < cellSize * 1.2) {
                         count++;
                     }
@@ -577,13 +639,9 @@
                 return count;
             };
             
-            // Filter out cells with fewer than 2 neighbors (corners/teeth)
-            cells = tempCells.filter(cell => getNeighborCount(cell, tempCells) >= 2);
-            
-            // 3. Calculate isEdge for remaining cells
             cells.forEach(cell => {
                 const neighbors = getNeighborCount(cell, cells);
-                cell.isEdge = neighbors < 3; // Triangle has 3 sides, so < 3 neighbors means it's on edge
+                cell.isEdge = neighbors < 3;
             });
         }
         
@@ -630,7 +688,9 @@
                 const dy = Math.abs(c.y - cell.y);
                 
                 // Adjacent triangles share an edge
-                if (dx <= cellSize * 0.6 && dy <= height * 1.1 && (dx + dy) < cellSize * 1.2) {
+                // Vertical neighbor: dx=0.5, dy=0.866 (approx). Sum = 1.366
+                // Horizontal neighbor: dx=0.5, dy=0. Sum = 0.5
+                if (dx <= cellSize * 0.6 && dy <= height * 1.1 && (dx + dy) < cellSize * 1.5) {
                     let edgeIndex = -1;
                     
                     if (cell.isUpward) {
@@ -662,10 +722,9 @@
         
         function getFleeDirections(cellId) {
             const adjacent = findAdjacent(cellId);
-            const cell = cells.find(c => c.id === cellId);
             const directions = [];
             
-            // Check each adjacent position
+            // Check each adjacent position (Valid Moves)
             adjacent.forEach(({ cell: adjCell, edgeIndex }) => {
                 if (!pieces[adjCell.id]) {
                     directions.push({
@@ -676,42 +735,32 @@
                 }
             });
             
-            // Check for edge exile
-            if (cell.isEdge) {
-                // Determine which edges lead off-board
-                const { row, col, rowWidth, isUpward } = cell;
-                
-                // Top edge (Only Downward triangles have a top edge)
-                if (row === 0 && !isUpward) {
-                    directions.push({ targetCell: null, edgeIndex: 2, isExile: true });
+            // Check for edge exile (Missing Neighbors)
+            // A triangle has 3 edges: 0, 1, 2.
+            // If a neighbor is missing in any direction, it's an exile path.
+            [0, 1, 2].forEach(edgeIndex => {
+                if (!adjacent.some(a => a.edgeIndex === edgeIndex)) {
+                    directions.push({
+                        targetCell: null,
+                        edgeIndex,
+                        isExile: true
+                    });
                 }
-                // Bottom edge (Only Upward triangles have a bottom edge)
-                if (row === GRID_SIZE * 2 - 2 && isUpward) {
-                    directions.push({ targetCell: null, edgeIndex: 2, isExile: true });
-                }
-                // Left edge
-                if (col === 0) {
-                    directions.push({ targetCell: null, edgeIndex: 0, isExile: true });
-                }
-                // Right edge
-                if (col === rowWidth * 2 - 1) {
-                    directions.push({ targetCell: null, edgeIndex: 1, isExile: true });
-                }
-            }
+            });
             
             return directions;
         }
         
-        function checkCollision(piece1, piece2) {
-            const v1 = getVisibleFaces(piece1.hiddenFace, piece1.rotation);
-            const v2 = getVisibleFaces(piece2.hiddenFace, piece2.rotation);
-            
-            for (const f1 of v1) {
-                for (const f2 of v2) {
-                    if (f1 === f2) return f1;
-                }
-            }
-            return null;
+        function getFaceAt(piece, edgeIndex) {
+            return getVisibleFaces(piece.hiddenFace, piece.rotation)[edgeIndex];
+        }
+
+        function getOpposingEdge(edgeIndex) {
+            // 0 (Left) <-> 1 (Right)
+            // 1 (Right) <-> 0 (Left)
+            // 2 (Vertical) <-> 2 (Vertical)
+            if (edgeIndex === 2) return 2;
+            return edgeIndex === 0 ? 1 : 0;
         }
         
         // ============================================
@@ -720,14 +769,20 @@
         
         function resolveCollisions(triggerCellId, newPieceCellId) {
             const cascadeQueue = [];
-            const processed = new Set();
             
+            // Helper to check specific edge collision
+            const checkEdgeCollision = (p1, p2, edgeIndex) => {
+                const f1 = getFaceAt(p1, edgeIndex);
+                const f2 = getFaceAt(p2, getOpposingEdge(edgeIndex));
+                return f1 === f2 ? f1 : null;
+            };
+
             // Initial collision check
             const adjacent = findAdjacent(triggerCellId);
             adjacent.forEach(({ cell: adjCell, edgeIndex }) => {
                 if (adjCell.id === newPieceCellId) return; // Don't check against the piece that just moved here
                 if (pieces[adjCell.id] && pieces[triggerCellId]) {
-                    const collision = checkCollision(pieces[triggerCellId], pieces[adjCell.id]);
+                    const collision = checkEdgeCollision(pieces[triggerCellId], pieces[adjCell.id], edgeIndex);
                     if (collision !== null) {
                         cascadeQueue.push({
                             attackerId: triggerCellId,
@@ -741,10 +796,10 @@
             // Also check if the new piece causes collisions
             if (newPieceCellId !== triggerCellId) {
                 const newAdjacent = findAdjacent(newPieceCellId);
-                newAdjacent.forEach(({ cell: adjCell }) => {
+                newAdjacent.forEach(({ cell: adjCell, edgeIndex }) => {
                     if (adjCell.id === triggerCellId) return;
                     if (pieces[adjCell.id] && pieces[newPieceCellId]) {
-                        const collision = checkCollision(pieces[newPieceCellId], pieces[adjCell.id]);
+                        const collision = checkEdgeCollision(pieces[newPieceCellId], pieces[adjCell.id], edgeIndex);
                         if (collision !== null && !cascadeQueue.some(c => c.defenderId === adjCell.id)) {
                             cascadeQueue.push({
                                 attackerId: newPieceCellId,
@@ -762,6 +817,7 @@
         async function processCascade(collision) {
             const { attackerId, defenderId, color } = collision;
             const defender = pieces[defenderId];
+            const attacker = pieces[attackerId];
             
             if (!defender) return []; // Already removed
             
@@ -772,6 +828,12 @@
             if (fleeOptions.length === 0) {
                 // Mutual destruction
                 addLog(`💀 Mutual destruction!`, 'destruction');
+                
+                if (castleMode) {
+                    if (attacker && attacker.isCastle) eliminatePlayer(attacker.owner);
+                    if (defender.isCastle) eliminatePlayer(defender.owner);
+                }
+
                 delete pieces[attackerId];
                 delete pieces[defenderId];
                 stats.destroyed += 2;
@@ -784,18 +846,43 @@
             if (fleeOptions.length === 1) {
                 chosenFlee = fleeOptions[0];
             } else {
-                // Owner chooses - for AI or if it's opponent's piece during their turn
+                // Determine Decision Maker
+                // Rule: Player to the left of the ATTACKER decides.
+                // Exception: If it is a "Castle" (defender.isCastle), the OWNER decides.
+                
+                let decisionMakerId;
+                
+                if (defender.isCastle) {
+                    decisionMakerId = defender.owner;
+                    addLog(`🏰 Castle defense! Owner decides.`, 'info');
+                } else {
+                    // Attacker might be gone (mutual destruction previously?), but we have the ID.
+                    // If attacker is gone, we use the owner from the collision context if possible, 
+                    // but pieces[attackerId] might be undefined.
+                    // However, processCascade is called immediately, so attacker should exist unless destroyed in parallel?
+                    // But we handle one collision at a time.
+                    // Wait, if A hits B, and B hits C.
+                    // When processing A->B. A exists.
+                    // When processing B->C. B exists (it moved).
+                    
+                    const attackerOwner = attacker ? attacker.owner : currentPlayer; // Fallback to current player if attacker missing
+                    decisionMakerId = getNextActivePlayer(attackerOwner);
+                }
+                
+                const decisionMaker = players[decisionMakerId];
                 const defenderOwner = defender.owner;
                 
-                if (players[defenderOwner].type === 'ai') {
+                addLog(`⚖ ${COLOR_NAMES[decisionMakerId]} decides flee for ${COLOR_NAMES[defenderOwner]}`, 'info');
+
+                if (decisionMaker.type === 'ai') {
                     // AI chooses flee direction
-                    chosenFlee = aiChooseFleeDirection(fleeOptions, defenderId);
+                    chosenFlee = aiChooseFleeDirection(fleeOptions, defenderId, decisionMakerId);
                     addLog(`🤖 AI chose flee direction`, 'ai');
-                } else if (players[defenderOwner].type === 'human') {
+                } else if (decisionMaker.type === 'human') {
                     // Human chooses
-                    chosenFlee = await humanChooseFleeDirection(fleeOptions, defenderId);
+                    chosenFlee = await humanChooseFleeDirection(fleeOptions, defenderId, decisionMakerId);
                 } else {
-                    // Should not happen if all players are configured, but fallback
+                    // Fallback
                     chosenFlee = fleeOptions.find(f => !f.isExile) || fleeOptions[0];
                 }
             }
@@ -803,6 +890,11 @@
             // Execute flee
             if (chosenFlee.isExile) {
                 addLog(`🚪 Piece exiled from board!`, 'exile');
+                
+                if (castleMode && defender.isCastle) {
+                    eliminatePlayer(defender.owner);
+                }
+
                 delete pieces[defenderId];
                 stats.exiled++;
                 return [];
@@ -822,30 +914,43 @@
             }
         }
         
-        function humanChooseFleeDirection(options, defenderId) {
+        function humanChooseFleeDirection(options, defenderId, decisionMakerId) {
             return new Promise(resolve => {
-                pendingFleeChoice = { options, defenderId, resolve };
-                showFleeChoiceModal(options, defenderId);
+                pendingFleeChoice = { options, defenderId, resolve, selectedIndex: 0, decisionMakerId };
+                showFleeChoiceModal(options, defenderId, decisionMakerId);
+                renderBoard(); // Re-render to show highlights
             });
         }
         
-        function showFleeChoiceModal(options, defenderId) {
+        function showFleeChoiceModal(options, defenderId, decisionMakerId) {
             const container = document.getElementById('modal-container');
             const defenderOwner = pieces[defenderId]?.owner;
+            const decisionMakerName = COLOR_NAMES[decisionMakerId];
+            const defenderName = COLOR_NAMES[defenderOwner];
             
-            let html = `<div class="modal-overlay">
-                <div class="flee-modal">
-                    <div class="modal-title">⚡ Choose Flee Direction</div>
-                    <div class="modal-hint">${COLOR_NAMES[defenderOwner]}'s piece must flee! Choose destination:</div>
-                    <div style="display: flex; flex-wrap: wrap; justify-content: center;">`;
+            let title = `⚡ ${decisionMakerName} Decides!`;
+            let hint = `${decisionMakerName} chooses where ${defenderName}'s piece flees:`;
+            
+            if (decisionMakerId === defenderOwner) {
+                title = `⚡ Save Your Piece!`;
+                hint = `Choose where your piece flees:`;
+            }
+            
+            let html = `<div class="modal-overlay interactive">
+                <div class="flee-modal" style="border-color: ${COLORS[decisionMakerId]}">
+                    <div class="modal-title" style="color: ${COLORS[decisionMakerId]}">${title}</div>
+                    <div class="modal-hint">${hint}</div>
+                    <div class="modal-hint" style="font-size: 0.7rem; margin-top: -10px;">(TAB to cycle, ENTER/SPACE to confirm, or Click Green Cell)</div>
+                    <div style="display: flex; flex-wrap: wrap; justify-content: center;" id="flee-btn-container">`;
             
             options.forEach((opt, idx) => {
+                const isSelected = idx === 0 ? 'selected' : '';
                 if (opt.isExile) {
-                    html += `<button class="flee-btn exile" onclick="selectFleeDirection(${idx})">
+                    html += `<button class="flee-btn exile ${isSelected}" id="flee-btn-${idx}" onclick="selectFleeDirection(${idx})">
                         🚪 Exile (Off Board)
                     </button>`;
                 } else {
-                    html += `<button class="flee-btn" onclick="selectFleeDirection(${idx})">
+                    html += `<button class="flee-btn ${isSelected}" id="flee-btn-${idx}" onclick="selectFleeDirection(${idx})">
                         → Cell ${opt.targetCell.id}
                     </button>`;
                 }
@@ -855,6 +960,20 @@
             container.innerHTML = html;
         }
         
+        function updateFleeModalSelection() {
+            if (!pendingFleeChoice) return;
+            const idx = pendingFleeChoice.selectedIndex;
+            
+            // Update buttons
+            const container = document.getElementById('flee-btn-container');
+            if (container) {
+                Array.from(container.children).forEach((btn, i) => {
+                    if (i === idx) btn.classList.add('selected');
+                    else btn.classList.remove('selected');
+                });
+            }
+        }
+
         function selectFleeDirection(index) {
             if (pendingFleeChoice) {
                 const choice = pendingFleeChoice.options[index];
@@ -868,66 +987,111 @@
         // AI OPPONENT
         // ============================================
         
-        function aiChooseFleeDirection(options, defenderId) {
+        function aiChooseFleeDirection(options, defenderId, decisionMakerId) {
             const piece = pieces[defenderId];
             if (!piece) return options[0];
             
-            // Priority: 
-            // 1. Flip toward empty interior
-            // 2. Flip toward opponent cluster
-            // 3. Exile only to avoid exposing AI color
+            const isSelf = decisionMakerId === piece.owner;
             
-            const nonExile = options.filter(o => !o.isExile);
-            if (nonExile.length > 0) {
-                // Prefer interior positions
-                const interior = nonExile.filter(o => !o.targetCell.isEdge);
-                if (interior.length > 0) return interior[0];
-                return nonExile[0];
+            if (isSelf) {
+                // AI is saving its own piece (Castle rule or self-collision)
+                // Priority: 
+                // 1. Avoid Exile
+                // 2. Hide own color
+                // 3. Move to interior
+                
+                const nonExile = options.filter(o => !o.isExile);
+                if (nonExile.length > 0) {
+                    // Prefer interior positions
+                    const interior = nonExile.filter(o => !o.targetCell.isEdge);
+                    if (interior.length > 0) return interior[0];
+                    return nonExile[0];
+                }
+                return options[0]; // Must exile
+            } else {
+                // AI is deciding for an opponent's piece
+                // Priority:
+                // 1. Exile the piece!
+                // 2. Move to edge (vulnerable)
+                // 3. Move to cause bad collision? (Too complex for now)
+                
+                const exileOption = options.find(o => o.isExile);
+                if (exileOption) return exileOption;
+                
+                // If can't exile, move to edge
+                const edgeOption = options.find(o => o.targetCell.isEdge);
+                if (edgeOption) return edgeOption;
+                
+                return options[0];
             }
-            
-            // Must exile
-            return options.find(o => o.isExile) || options[0];
         }
         
         function evaluatePlacement(cellId, hiddenFace, rotation) {
             let score = 0;
             const piece = { hiddenFace, rotation, owner: currentPlayer };
+            const cell = cells.find(c => c.id === cellId);
             
-            // Priority 1: Bury AI color
+            // Priority 1: Bury AI color (Primary Objective)
             if (hiddenFace === currentPlayer) score += 100;
             
-            // Priority 4: Claim interior
-            const cell = cells.find(c => c.id === cellId);
-            if (!cell.isEdge) score += 20;
+            // Priority 2: Centrality (Control the center)
+            // Calculate distance from center of board
+            // Board center is approx at row = BOARD_SIZE, col = middle
+            // Simple heuristic: Higher row/col index means further out? No.
+            // Use cell.row and cell.col relative to board size.
+            // Or just use neighbor count as proxy for centrality?
+            // Center cells have 3 neighbors. Edge cells have < 3.
+            // But we want "Deep" center.
+            // Let's use the pre-calculated coordinates.
+            // Find board center coordinates
+            const boardCenterY = (BOARD_SIZE * 2 * cell.height) / 2;
+            // Max width is roughly (4 * BOARD_SIZE * cellSize)
+            const boardCenterX = (4 * BOARD_SIZE * cell.cellSize) / 2; // Approx
             
-            // Priority 2: Avoid exposing AI color through cascades
-            const visible = getVisibleFaces(hiddenFace, rotation);
+            const dist = Math.sqrt((cell.x - boardCenterX)**2 + (cell.y - boardCenterY)**2);
+            const maxDist = boardCenterX; // Approx
+            const centralityScore = Math.max(0, (1 - dist/maxDist) * 40);
+            score += centralityScore;
+            
+            // Priority 3: Aggression & Safety (Look ahead 1 step)
             const adjacent = findAdjacent(cellId);
-            
             let collisionRisk = 0;
-            adjacent.forEach(({ cell: adjCell }) => {
+            let attackBonus = 0;
+            
+            adjacent.forEach(({ cell: adjCell, edgeIndex }) => {
                 if (pieces[adjCell.id]) {
-                    const collision = checkCollision(piece, pieces[adjCell.id]);
-                    if (collision !== null) {
-                        collisionRisk++;
-                        // Priority 3: Threaten opponent's buried colors
+                    const f1 = getFaceAt(piece, edgeIndex);
+                    const f2 = getFaceAt(pieces[adjCell.id], getOpposingEdge(edgeIndex));
+                    
+                    if (f1 === f2) {
+                        // Collision!
+                        // If I am repelled (my piece moves), that's risky/bad usually
+                        // Unless I want to move? But usually we want to stick.
+                        // In this game, BOTH repel? No, "stationary piece is REPELLED".
+                        // Wait, the rule is "When visible faces of same color touch, the stationary piece is REPELLED".
+                        // The "stationary" piece is the one ALREADY ON THE BOARD.
+                        // The PLACED piece (attacker) stays?
+                        // "The stationary piece is REPELLED" -> The defender moves.
+                        
+                        // So placing a piece that causes collision is an ATTACK.
+                        // Attacking is good if we displace an enemy.
                         if (pieces[adjCell.id].owner !== currentPlayer) {
-                            score += 10;
+                            attackBonus += 25;
+                            // Bonus if we push them to exile? (Hard to calc, but edge proximity helps)
+                            if (adjCell.isEdge) attackBonus += 15;
+                        } else {
+                            // Displacing self? Might be okay to reposition, but usually chaotic.
+                            collisionRisk += 10;
                         }
                     }
                 }
             });
             
-            // Penalize high collision risk (unpredictable cascades)
-            score -= collisionRisk * 15;
+            score += attackBonus;
+            score -= collisionRisk;
             
-            // Priority 5: Use neutrals strategically (if any)
-            // In 4 player game, there are no neutrals, but in 2 player there are.
-            // If hiddenFace is not current player and not an active opponent...
-            // But for now, just prefer hiding own color.
-            if (hiddenFace !== currentPlayer) {
-                score -= 30; 
-            }
+            // Priority 4: Randomness to break ties and prevent sequential placement
+            score += Math.random() * 10;
             
             return score;
         }
@@ -936,10 +1100,18 @@
             const emptyCells = cells.filter(c => !pieces[c.id]);
             if (emptyCells.length === 0) return null;
             
+            // Shuffle empty cells to prevent positional bias when scores are tied
+            for (let i = emptyCells.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [emptyCells[i], emptyCells[j]] = [emptyCells[j], emptyCells[i]];
+            }
+            
             let bestMove = null;
             let bestScore = -Infinity;
             
+            // Evaluate a subset if too many? No, 96 is small enough.
             emptyCells.forEach(cell => {
+                // Try all orientations
                 for (let hidden = 0; hidden < 4; hidden++) {
                     for (let rot = 0; rot < 3; rot++) {
                         const score = evaluatePlacement(cell.id, hidden, rot);
@@ -952,6 +1124,35 @@
             });
             
             return bestMove;
+        }
+        
+        // Simulation Tool
+        async function runSimulation(games = 10) {
+            console.log(`Starting simulation of ${games} games...`);
+            const originalMode = gameMode;
+            const originalDelay = window.sleep;
+            
+            // Speed up
+            window.sleep = (ms) => new Promise(r => setTimeout(r, 0));
+            
+            let aiWins = 0;
+            let turns = 0;
+            
+            for (let i = 0; i < games; i++) {
+                resetGame();
+                // Force all AI
+                players.forEach(p => p.type = 'ai');
+                
+                while (!gameOver && turns < 1000) {
+                    await executeAITurn();
+                    turns++;
+                }
+                console.log(`Game ${i+1} finished.`);
+            }
+            
+            // Restore
+            window.sleep = originalDelay;
+            console.log("Simulation complete.");
         }
         
         async function executeAITurn() {
@@ -982,14 +1183,20 @@
         async function placePiece(cellId, hiddenFace, rotation) {
             if (pieces[cellId] || gameOver) return;
             
+            const isFirstPiece = !Object.values(pieces).some(p => p.owner === currentPlayer);
+            const isCastle = castleMode && isFirstPiece;
+
             const newPiece = { 
                 hiddenFace, 
                 rotation, 
-                owner: currentPlayer 
+                owner: currentPlayer,
+                isCastle
             };
             
             pieces[cellId] = newPiece;
-            addLog(`${COLOR_NAMES[currentPlayer]} placed (hiding ${COLOR_NAMES[hiddenFace]})`);
+            
+            if (isCastle) addLog(`🏰 ${COLOR_NAMES[currentPlayer]} Castle placed!`, 'info');
+            else addLog(`${COLOR_NAMES[currentPlayer]} placed (hiding ${COLOR_NAMES[hiddenFace]})`);
             
             renderBoard();
             await sleep(100);
@@ -1025,6 +1232,24 @@
         }
         
         function checkGameOver() {
+            // Check for Last Man Standing in Castle Mode
+            if (castleMode) {
+                // Count players who started the game (based on UI or some other tracking?)
+                // We can check who has pieces OR who is marked active.
+                // But at start, no one has pieces.
+                // So we rely on 'active' flag.
+                // But we need to ensure we don't trigger this before the game starts (0 pieces).
+                const totalPieces = Object.keys(pieces).length;
+                if (totalPieces > 0) {
+                    const activeSurvivors = players.filter(p => p.active);
+                    if (activeSurvivors.length <= 1) {
+                        gameOver = true;
+                        showGameOver();
+                        return true;
+                    }
+                }
+            }
+
             const emptyCells = cells.filter(c => !pieces[c.id]);
             if (emptyCells.length === 0) {
                 gameOver = true;
@@ -1041,16 +1266,29 @@
             let maxScore = -1;
             let isTie = false;
             
-            players.forEach(p => {
-                if (!p.active) return;
-                if (scores[p.id] > maxScore) {
-                    maxScore = scores[p.id];
-                    winner = p;
-                    isTie = false;
-                } else if (scores[p.id] === maxScore) {
-                    isTie = true;
-                }
-            });
+            // If Castle Mode and only 1 active survivor
+            const activeSurvivors = players.filter(p => p.active);
+            if (castleMode && activeSurvivors.length === 1) {
+                winner = activeSurvivors[0];
+                isTie = false;
+            } else {
+                players.forEach(p => {
+                    // In castle mode, ignore eliminated players
+                    if (castleMode && !p.active) return;
+                    // In normal mode, only check players who were part of the game
+                    // (We need a way to know who was playing originally if we don't use 'active' for elimination in normal mode)
+                    // But in normal mode 'active' is only set at start.
+                    if (!p.active) return;
+
+                    if (scores[p.id] > maxScore) {
+                        maxScore = scores[p.id];
+                        winner = p;
+                        isTie = false;
+                    } else if (scores[p.id] === maxScore) {
+                        isTie = true;
+                    }
+                });
+            }
             
             let winnerText, winnerColor;
             if (isTie) {
@@ -1097,10 +1335,40 @@
         
         // Keyboard Shortcuts
         document.addEventListener('keydown', (e) => {
-            if (gameOver || !ghostPiece) return;
+            if (gameOver) return;
+            
+            // Handle Flee Selection Keys
+            if (pendingFleeChoice) {
+                if (e.key === 'Tab' || e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    const count = pendingFleeChoice.options.length;
+                    pendingFleeChoice.selectedIndex = (pendingFleeChoice.selectedIndex + 1) % count;
+                    updateFleeModalSelection();
+                    renderBoard(); 
+                } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    const count = pendingFleeChoice.options.length;
+                    pendingFleeChoice.selectedIndex = (pendingFleeChoice.selectedIndex - 1 + count) % count;
+                    updateFleeModalSelection();
+                    renderBoard();
+                } else if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    selectFleeDirection(pendingFleeChoice.selectedIndex);
+                }
+                return;
+            }
             
             // Only allow manipulation if it's human turn
             if (players[currentPlayer].type !== 'human') return;
+
+            // D-Pad Navigation
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                e.preventDefault();
+                moveSelection(e.key);
+                return;
+            }
+
+            if (!ghostPiece) return;
 
             switch(e.key.toLowerCase()) {
                 case 'r':
@@ -1109,8 +1377,6 @@
                     break;
                 case 'f':
                     // Cycle through valid hidden faces
-                    // For simplicity, just cycle 0-3, but maybe we should skip inactive players?
-                    // Let's just cycle 0-3 for now, player can choose to hide neutral
                     ghostPiece.hiddenFace = (ghostPiece.hiddenFace + 1) % 4;
                     renderBoard();
                     break;
@@ -1126,8 +1392,84 @@
             }
         });
 
+        function moveSelection(key) {
+            // If no ghost piece, start at center
+            if (!ghostPiece) {
+                // Find center cell
+                const centerRow = Math.floor(BOARD_SIZE);
+                const rowCells = cells.filter(c => c.row === centerRow);
+                const centerCell = rowCells[Math.floor(rowCells.length / 2)];
+                if (centerCell) handleCellClick(centerCell.id);
+                return;
+            }
+
+            const currentCell = cells.find(c => c.id === ghostPiece.cellId);
+            if (!currentCell) return;
+
+            let targetCell = null;
+            let bestDist = Infinity;
+
+            // Filter candidates based on direction
+            let candidates = [];
+            
+            if (key === 'ArrowUp') {
+                // Look in row above
+                candidates = cells.filter(c => c.row === currentCell.row - 1);
+            } else if (key === 'ArrowDown') {
+                // Look in row below
+                candidates = cells.filter(c => c.row === currentCell.row + 1);
+            } else if (key === 'ArrowLeft') {
+                // Look in same row, to the left
+                candidates = cells.filter(c => c.row === currentCell.row && c.x < currentCell.x);
+            } else if (key === 'ArrowRight') {
+                // Look in same row, to the right
+                candidates = cells.filter(c => c.row === currentCell.row && c.x > currentCell.x);
+            }
+
+            // Find closest candidate
+            candidates.forEach(c => {
+                // For Up/Down, minimize X distance
+                // For Left/Right, minimize X distance (closest neighbor)
+                const dist = Math.abs(c.x - currentCell.x);
+                
+                // For Left/Right, we want the closest one, so simple min dist works
+                // For Up/Down, we also want closest X alignment
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    targetCell = c;
+                }
+            });
+            
+            // Special case for Left/Right: we want the *closest* one, not just any
+            if (key === 'ArrowLeft' || key === 'ArrowRight') {
+                // Sort by distance and pick first
+                candidates.sort((a, b) => Math.abs(a.x - currentCell.x) - Math.abs(b.x - currentCell.x));
+                targetCell = candidates[0];
+            }
+
+            if (targetCell) {
+                // Move ghost piece to new cell
+                // Preserve rotation/hidden face? Yes.
+                ghostPiece.cellId = targetCell.id;
+                renderBoard();
+            }
+        }
+
         function handleCellClick(cellId) {
             if (pieces[cellId] || gameOver) return;
+            
+            // Handle Flee Selection Click
+            if (pendingFleeChoice) {
+                const optionIndex = pendingFleeChoice.options.findIndex(opt => 
+                    !opt.isExile && opt.targetCell && opt.targetCell.id === cellId
+                );
+                
+                if (optionIndex !== -1) {
+                    selectFleeDirection(optionIndex);
+                }
+                return;
+            }
+
             if (players[currentPlayer].type === 'ai') return; // AI's turn
             
             // If clicking the same cell with ghost piece, confirm placement
@@ -1151,6 +1493,18 @@
         function hideOrientationPicker() {
             ghostPiece = null;
             renderBoard();
+        }
+
+        function updateBoardSize() {
+            const size = parseInt(document.getElementById('board-size').value);
+            BOARD_SIZE = size;
+            applySetupAndReset();
+        }
+
+        function updateCastleMode() {
+            castleMode = document.getElementById('castle-mode').checked;
+            // Don't reset game, just update flag for next game or current if early?
+            // Better to apply on reset.
         }
 
         function updatePlayerConfig() {
@@ -1178,6 +1532,10 @@
 
         function applySetupAndReset() {
             const count = parseInt(document.getElementById('player-count').value);
+            castleMode = document.getElementById('castle-mode').checked;
+            
+            // Ensure Board Size is synced
+            BOARD_SIZE = parseInt(document.getElementById('board-size').value);
             
             // Reset players
             players.forEach(p => p.active = false);
@@ -1191,6 +1549,9 @@
             // Update game mode for legacy checks (though we should use players array now)
             // If any player is AI, we can consider it 'ai' mode for some UI logic
             gameMode = players.some(p => p.active && p.type === 'ai') ? 'ai' : 'pvp';
+            
+            // REGENERATE GRID for new board size
+            generateGrid();
             
             resetGame();
         }
@@ -1207,8 +1568,26 @@
             cells.forEach(cell => {
                 const piece = pieces[cell.id];
                 const isOccupied = !!piece;
+                
+                // Flee Selection Logic
+                let isFleeTarget = false;
+                let isFleeSelected = false;
+                
+                if (pendingFleeChoice) {
+                    const optionIndex = pendingFleeChoice.options.findIndex(opt => 
+                        !opt.isExile && opt.targetCell && opt.targetCell.id === cell.id
+                    );
+                    
+                    if (optionIndex !== -1) {
+                        isFleeTarget = true;
+                        if (optionIndex === pendingFleeChoice.selectedIndex) {
+                            isFleeSelected = true;
+                        }
+                    }
+                }
+
                 const isValidTarget = !isOccupied && !gameOver && 
-                    (players[currentPlayer].type === 'human');
+                    (players[currentPlayer].type === 'human') && !pendingFleeChoice;
                 
                 const { x, y, isUpward, cellSize, height } = cell;
                 
@@ -1221,8 +1600,12 @@
                 if (cell.isEdge) fillColor = '#1a1f35';
                 if (isValidTarget) fillColor = '#172033';
                 
-                html += `<g class="cell ${isOccupied ? 'occupied' : ''} ${isValidTarget ? 'valid-target' : ''}" 
-                    onclick="handleCellClick(${cell.id})">`;
+                let classes = `cell ${isOccupied ? 'occupied' : ''}`;
+                if (isValidTarget) classes += ' valid-target';
+                if (isFleeTarget) classes += ' flee-target';
+                if (isFleeSelected) classes += ' selected';
+                
+                html += `<g class="${classes}" onclick="handleCellClick(${cell.id})">`;
                 html += `<polygon points="${points}" fill="${fillColor}" stroke="#334155" stroke-width="1"/>`;
                 
                 if (piece) {
@@ -1254,10 +1637,21 @@
                 
                 // Visible face indicators
                 visible.forEach((face, i) => {
-                    // Correction for Upward triangles to point to faces instead of vertices
-                    // Upward: 90, 210, 330. Downward: -90, 30, 150.
-                    const baseAngle = isUpward ? (i * 120 + 90) : (i * 120 - 90);
-                    const angle = baseAngle * Math.PI / 180;
+                    // i is the edgeIndex (0, 1, 2)
+                    let angleDeg;
+                    if (isUpward) {
+                        // 0=Left(210), 1=Right(330), 2=Bottom(90)
+                        if (i === 0) angleDeg = 210;
+                        else if (i === 1) angleDeg = 330;
+                        else angleDeg = 90;
+                    } else {
+                        // 0=Left(150), 1=Right(30), 2=Top(270)
+                        if (i === 0) angleDeg = 150;
+                        else if (i === 1) angleDeg = 30;
+                        else angleDeg = 270;
+                    }
+                    
+                    const angle = angleDeg * Math.PI / 180;
                     
                     html += `<line x1="${cx + Math.cos(angle) * 7}" y1="${cy + Math.sin(angle) * 7}" 
                         x2="${cx + Math.cos(angle) * 13}" y2="${cy + Math.sin(angle) * 13}" 
@@ -1267,6 +1661,10 @@
                 // Owner indicator (tiny corner mark)
                 const ownerX = cx + (p.owner === 0 ? -8 : 8);
                 html += `<circle cx="${ownerX}" cy="${cy - 8}" r="2" fill="${COLORS[p.owner]}" opacity="0.6"/>`;
+                
+                if (p.isCastle) {
+                    html += `<text x="${cx}" y="${cy+4}" text-anchor="middle" font-size="12" fill="white" style="pointer-events:none; text-shadow: 0 0 3px black;">👑</text>`;
+                }
             }
             
             svg.innerHTML = html;
@@ -1369,6 +1767,16 @@
         function sleep(ms) {
             return new Promise(resolve => setTimeout(resolve, ms));
         }
+
+        function getNextActivePlayer(playerId) {
+            let next = (playerId + 1) % 4;
+            while (!players[next].active) {
+                next = (next + 1) % 4;
+                // Safety break to prevent infinite loop if no one is active (shouldn't happen)
+                if (next === playerId) return playerId;
+            }
+            return next;
+        }
         
         function determineFirstPlayer() {
             const container = document.getElementById('modal-container');
@@ -1428,6 +1836,13 @@
             stats = { exiled: 0, destroyed: 0 };
             pendingFleeChoice = null;
             
+            // Restore player active states based on UI
+            const count = parseInt(document.getElementById('player-count').value);
+            players.forEach(p => p.active = false);
+            for (let i = 0; i < count; i++) {
+                players[i].active = true;
+            }
+
             document.getElementById('game-log').innerHTML = '<div class="log-empty">Click a cell to begin</div>';
             document.getElementById('modal-container').innerHTML = '';
             document.getElementById('game-over-container').innerHTML = '';
@@ -1435,6 +1850,14 @@
             determineFirstPlayer();
         }
         
+        function eliminatePlayer(playerId) {
+            if (players[playerId].active) {
+                players[playerId].active = false;
+                addLog(`👑 ${COLOR_NAMES[playerId]} ELIMINATED (Castle Lost)!`, 'destruction');
+                checkGameOver();
+            }
+        }
+
         // ============================================
         // INITIALIZATION
         // ============================================
